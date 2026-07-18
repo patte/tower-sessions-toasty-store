@@ -1,8 +1,9 @@
 [workspace]
 # De-facto single-crate repo (the `tests` crate is publish = false, so
-# release-plz skips it): tag releases `v0.1.0`, not the workspace-prefixed
-# `tower-sessions-toasty-store-v0.1.0` default.
+# release-plz skips it): tag and name releases `v0.1.0`, not the
+# workspace-prefixed `tower-sessions-toasty-store-v0.1.0` default.
 git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
 
 [[package]]
 name = "tower-sessions-toasty-store"
