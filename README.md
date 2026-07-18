@@ -6,7 +6,7 @@
     <a href="https://github.com/tokio-rs/toasty">Toasty</a> ORM session store for <code>tower-sessions</code>. One store, many backends: SQLite, PostgreSQL, MySQL, Turso.
 </p>
 
-[![tests](https://github.com/patte/tower-sessions-toasty-store/actions/workflows/rust.yml/badge.svg)](https://github.com/patte/tower-sessions-toasty-store/actions/workflows/rust.yml) [![crates.io](https://img.shields.io/crates/v/tower-sessions-toasty-store)](https://crates.io/crates/tower-sessions-toasty-store)
+[![tests](https://github.com/patte/tower-sessions-toasty-store/actions/workflows/rust.yml/badge.svg)](https://github.com/patte/tower-sessions-toasty-store/actions/workflows/rust.yml) [![crates.io](https://img.shields.io/crates/v/tower-sessions-toasty-store)](https://crates.io/crates/tower-sessions-toasty-store) [![codecov](https://codecov.io/gh/patte/tower-sessions-toasty-store/graph/badge.svg)](https://codecov.io/gh/patte/tower-sessions-toasty-store)
 
 ## Overview
 
