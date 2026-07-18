@@ -62,7 +62,7 @@ Toasty is young. This table records every place this store deviates from the ref
 | No native upsert (`ON CONFLICT DO UPDATE`) | `save()`: existence check, then insert or update as single statements, falling back to update when a racing insert wins | gains an upsert builder — tracked in [#422](https://github.com/tokio-rs/toasty/issues/422), implementation in flight in [#1091](https://github.com/tokio-rs/toasty/pull/1091) |
 | No affected-row count from update/delete | can't "try update, detect miss" — forces the existence check above | returns row counts from `exec()` |
 | No structured unique-violation error | `create()`/`save()` re-check row existence after a failed insert to distinguish "lost an id race" from a real error | adds an `is_constraint_violation()`-style API |
-| A failed statement inside an interactive transaction can leave the pooled connection mid-transaction (next use fails with "cannot start a transaction within a transaction"; observed on SQLite/Turso under write contention) | no interactive transactions at all — single-statement operations plus the existence re-checks above | cleans up transaction state when a statement fails |
+| A failed statement inside an interactive transaction can leave the pooled connection mid-transaction (next use fails with "cannot start a transaction within a transaction"; observed on SQLite/Turso under write contention) | no interactive transactions at all — single-statement operations plus the existence re-checks above | fixes [#1098](https://github.com/tokio-rs/toasty/issues/1098) |
 | Retryable conflicts are not retried by Toasty (by design), and the SQLite driver reports `SQLITE_BUSY` as an unstructured error rather than a serialization failure | every operation retries with exponential backoff on `is_serialization_failure()`, plus a "database is locked" string match for SQLite | classifies `SQLITE_BUSY` as a serialization failure (drops the string match) |
 | No `time` crate support (only `jiff`) | `expiry_date` stored as unix-seconds `i64` | adds `time::OffsetDateTime` field support |
 | `push_schema()` not idempotent, no if-not-exists | `migrate()` probes the table first, only pushes on error | makes `push_schema` idempotent or exposes if-not-exists |
@@ -71,7 +71,7 @@ Toasty is young. This table records every place this store deviates from the ref
 
 DynamoDB is untested and unsupported for now.
 
-The mid-transaction pooled-connection row looks like an upstream driver bug rather than a design limitation: after a statement fails inside `db.transaction()`, the connection appears to return to the pool without being rolled back, poisoning later checkouts. <!-- TODO: file against tokio-rs/toasty — no existing issue as of 2026-07-18 (searched all 84 open issues) --> To reproduce it, check out `ead27d5` (the last transaction-based version of this store, toasty 0.8.0) and run `cargo nextest run --test test_concurrency` — the sqlite and turso stress tests fail with "cannot start a transaction within a transaction" within seconds.
+The mid-transaction pooled-connection row is reported upstream as [tokio-rs/toasty#1098](https://github.com/tokio-rs/toasty/issues/1098), including a minimal standalone reproducer. It can also be reproduced with this store: check out `ead27d5` (the last transaction-based version, toasty 0.8.0) and run `cargo nextest run --test test_concurrency` — the sqlite and turso stress tests fail with "cannot start a transaction within a transaction" within seconds.
 
 ## 🧪 Tests
 
