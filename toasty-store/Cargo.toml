@@ -1,0 +1,34 @@
+[package]
+name = "tower-sessions-toasty-store"
+description = "Toasty ORM session store for `tower-sessions`. One store, many backends: SQLite, PostgreSQL, MySQL, Turso."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+authors = ["Patrick Recher <p@tte.io>"]
+license = "MIT"
+homepage = "https://github.com/patte/tower-sessions-toasty-store"
+keywords = ["axum", "sessions", "cookie", "tower", "toasty"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+repository = "https://github.com/patte/tower-sessions-toasty-store"
+documentation = "https://docs.rs/tower-sessions-toasty-store"
+readme = "../README.md"
+
+[dependencies]
+async-trait = "0.1.89"
+rmp-serde = "1.3.0"
+thiserror = "2.0.17"
+time = "0.3.44"
+toasty = "0.8.0"
+tower-sessions-core = { version = "0.15.0", features = ["deletion-task"] }
+
+[dev-dependencies]
+axum = "0.8.7"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+toasty = { version = "0.8.0", features = ["sqlite"] }
+tokio = { version = "1.48.0", features = ["full"] }
+tokio-test = "0.4.4"
+tower-sessions = "0.15.0"
+
+[[example]]
+name = "counter"
