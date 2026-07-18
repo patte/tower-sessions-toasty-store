@@ -1,7 +1,7 @@
 [package]
 name = "tower-sessions-toasty-store"
 description = "Toasty ORM session store for `tower-sessions`. One store, many backends: SQLite, PostgreSQL, MySQL, Turso."
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.95"
 authors = ["Patrick Recher <p@tte.io>"]
