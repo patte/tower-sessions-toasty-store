@@ -71,6 +71,8 @@ Toasty is young. This table records every place this store deviates from the ref
 
 DynamoDB is untested and unsupported for now.
 
+The mid-transaction pooled-connection row looks like an upstream driver bug rather than a design limitation: after a statement fails inside `db.transaction()`, the connection appears to return to the pool without being rolled back, poisoning later checkouts. <!-- TODO: file against tokio-rs/toasty --> To reproduce it, check out `ead27d5` (the last transaction-based version of this store, toasty 0.8.0) and run `cargo nextest run --test test_concurrency` — the sqlite and turso stress tests fail with "cannot start a transaction within a transaction" within seconds.
+
 ## 🧪 Tests
 
 This crate is covered by integration- and unit-tests.
