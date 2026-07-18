@@ -275,10 +275,22 @@ impl SessionStore for ToastyStore {
                 Ok(_) => {
                     tx.commit().await.map_err(ToastyStoreError::Toasty)?;
                 }
-                Err(_) => {
-                    // A concurrent first-save of the same id won the insert.
-                    // Roll back and apply this save as the update it now is.
+                Err(insert_err) => {
+                    // Toasty has no structured unique-violation error, so
+                    // re-check the row instead: if it exists now, a concurrent
+                    // first-save of the same id won the insert and this save
+                    // is the update it now is. Otherwise the insert failed for
+                    // a real reason — surface it.
                     drop(tx);
+                    let raced = TowerSession::filter_by_id(&id)
+                        .first()
+                        .exec(&mut db)
+                        .await
+                        .map_err(ToastyStoreError::Toasty)?
+                        .is_some();
+                    if !raced {
+                        return Err(ToastyStoreError::Toasty(insert_err).into());
+                    }
                     TowerSession::update_by_id(&id)
                         .data(data)
                         .expiry_date(expiry_date)
