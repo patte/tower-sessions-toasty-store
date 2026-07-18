@@ -59,20 +59,23 @@ Toasty is young. This table records every place this store deviates from the ref
 
 | Toasty limitation (as of 0.8) | What this store does instead | Revisit when Toasty… |
 |---|---|---|
-| No native upsert (`ON CONFLICT DO UPDATE`) | `save()`: transaction + select-then-branch, retry-as-update on insert race | gains an upsert/`create_or_update` builder |
-| No affected-row count from update/delete | can't "try update, detect miss" — forces the select above | returns row counts from `exec()` |
-| No structured unique-violation error | `create()`: transaction + exists-loop (upstream PostgresStore pattern) instead of insert-or-abort + catch | adds an `is_constraint_violation()`-style API |
+| No native upsert (`ON CONFLICT DO UPDATE`) | `save()`: existence check, then insert or update as single statements, falling back to update when a racing insert wins | gains an upsert/`create_or_update` builder |
+| No affected-row count from update/delete | can't "try update, detect miss" — forces the existence check above | returns row counts from `exec()` |
+| No structured unique-violation error | `create()`/`save()` re-check row existence after a failed insert to distinguish "lost an id race" from a real error | adds an `is_constraint_violation()`-style API |
+| A failed statement inside an interactive transaction can leave the pooled connection mid-transaction (next use fails with "cannot start a transaction within a transaction"; observed on SQLite/Turso under write contention) | no interactive transactions at all — single-statement operations plus the existence re-checks above | cleans up transaction state when a statement fails |
+| Retryable conflicts are not retried by Toasty (by design), and the SQLite driver reports `SQLITE_BUSY` as an unstructured error rather than a serialization failure | every operation retries with exponential backoff on `is_serialization_failure()`, plus a "database is locked" string match for SQLite | classifies `SQLITE_BUSY` as a serialization failure (drops the string match) |
 | No `time` crate support (only `jiff`) | `expiry_date` stored as unix-seconds `i64` | adds `time::OffsetDateTime` field support |
 | `push_schema()` not idempotent, no if-not-exists | `migrate()` probes the table first, only pushes on error | makes `push_schema` idempotent or exposes if-not-exists |
 | Table name fixed at compile time (`#[table]`) | no `with_table_name()`; use `Db::builder().table_name_prefix(..)` | supports runtime table naming per model |
-| Interactive transactions are SQL-only | DynamoDB unsupported | exposes conditional writes / DynamoDB transactions |
 | Unregistered model panics (`invalid model ID`) | usage warning above + the `connect()` convenience constructor | surfaces a recoverable error instead |
+
+DynamoDB is untested and unsupported for now.
 
 ## 🧪 Tests
 
 This crate is covered by integration- and unit-tests.
 
-The integration tests are copied from [`tower-sessions-stores`](https://github.com/maxcountryman/tower-sessions-stores) and kept in the `tests` crate. SQLite and Turso run out of the box (both fully local, in-memory):
+The integration tests are copied from [`tower-sessions-stores`](https://github.com/maxcountryman/tower-sessions-stores) and kept in the `tests` crate, plus concurrent stress tests ([tests/test-concurrency.rs](./tests/test-concurrency.rs)) that race parallel creates and saves — including on file-backed SQLite, where the pool holds multiple connections and real write contention occurs. SQLite and Turso run out of the box (both fully local):
 
 ```bash
 cargo nextest run --test test_integration

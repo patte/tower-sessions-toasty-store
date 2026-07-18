@@ -3,9 +3,8 @@
 //!
 //! One store implementation, many backends: SQLite, PostgreSQL, MySQL, and
 //! Turso — the store uses only portable Toasty query-builder calls, so every
-//! SQL backend shares the same code path. DynamoDB is not supported (the
-//! store relies on interactive transactions, which Toasty offers only on SQL
-//! backends).
+//! SQL backend shares the same code path. DynamoDB is untested and not
+//! supported.
 //!
 //! # Usage
 //!
@@ -192,9 +191,68 @@ impl ToastyStore {
     }
 }
 
+/// Toasty deliberately does not retry retryable transaction conflicts — the
+/// caller re-runs them. Turso, PostgreSQL, and MySQL classify such conflicts
+/// as structured serialization failures; the SQLite driver reports
+/// `SQLITE_BUSY` as an unstructured error, hence the string match.
+fn is_retryable(err: &toasty::Error) -> bool {
+    err.is_serialization_failure() || err.to_string().contains("database is locked")
+}
+
+const MAX_CONFLICT_RETRIES: u32 = 8;
+
+/// 10ms, 20ms, 40ms, ... capped at 160ms per attempt.
+fn backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(5u64 << attempt.min(5))
+}
+
+/// Re-evaluates `$op` until it succeeds, fails non-retryably, or exhausts
+/// [`MAX_CONFLICT_RETRIES`].
+macro_rules! retry_on_conflict {
+    ($op:expr) => {{
+        let mut attempt = 0;
+        loop {
+            match $op {
+                Err(ToastyStoreError::Toasty(err))
+                    if is_retryable(&err) && attempt < MAX_CONFLICT_RETRIES =>
+                {
+                    attempt += 1;
+                    tokio::time::sleep(backoff(attempt)).await;
+                }
+                result => break result,
+            }
+        }
+    }};
+}
+
 #[async_trait]
 impl ExpiredDeletion for ToastyStore {
     async fn delete_expired(&self) -> session_store::Result<()> {
+        Ok(retry_on_conflict!(self.try_delete_expired().await)?)
+    }
+}
+
+#[async_trait]
+impl SessionStore for ToastyStore {
+    async fn create(&self, record: &mut Record) -> session_store::Result<()> {
+        Ok(retry_on_conflict!(self.try_create(record).await)?)
+    }
+
+    async fn save(&self, record: &Record) -> session_store::Result<()> {
+        Ok(retry_on_conflict!(self.try_save(record).await)?)
+    }
+
+    async fn load(&self, session_id: &Id) -> session_store::Result<Option<Record>> {
+        Ok(retry_on_conflict!(self.try_load(session_id).await)?)
+    }
+
+    async fn delete(&self, session_id: &Id) -> session_store::Result<()> {
+        Ok(retry_on_conflict!(self.try_delete(session_id).await)?)
+    }
+}
+
+impl ToastyStore {
+    async fn try_delete_expired(&self) -> Result<(), ToastyStoreError> {
         let mut db = self.db.clone();
         let now = OffsetDateTime::now_utc().unix_timestamp();
         TowerSession::filter(TowerSession::fields().expiry_date().lt(now))
@@ -204,92 +262,94 @@ impl ExpiredDeletion for ToastyStore {
             .map_err(ToastyStoreError::Toasty)?;
         Ok(())
     }
-}
 
-#[async_trait]
-impl SessionStore for ToastyStore {
-    async fn create(&self, record: &mut Record) -> session_store::Result<()> {
-        let mut db = self.db.clone();
-        let mut tx = db.transaction().await.map_err(ToastyStoreError::Toasty)?;
-
-        while TowerSession::filter_by_id(record.id.to_string())
+    async fn id_exists(db: &mut toasty::Db, id: &Id) -> Result<bool, ToastyStoreError> {
+        Ok(TowerSession::filter_by_id(id.to_string())
             .first()
-            .exec(&mut tx)
+            .exec(db)
             .await
             .map_err(ToastyStoreError::Toasty)?
-            .is_some()
-        {
-            record.id = Id::default();
-        }
-
-        let data = rmp_serde::to_vec(record).map_err(ToastyStoreError::Encode)?;
-
-        toasty::create!(TowerSession {
-            id: record.id.to_string(),
-            data,
-            expiry_date: record.expiry_date.unix_timestamp(),
-        })
-        .exec(&mut tx)
-        .await
-        .map_err(ToastyStoreError::Toasty)?;
-
-        tx.commit().await.map_err(ToastyStoreError::Toasty)?;
-        Ok(())
+            .is_some())
     }
 
-    async fn save(&self, record: &Record) -> session_store::Result<()> {
+    // create and save use single-statement operations, no interactive
+    // transaction. A transaction adds nothing here: the id races it would
+    // narrow are already handled by re-checking existence after a failed
+    // insert, and single statements keep pooled connections free of
+    // transaction state under contention.
+
+    async fn try_create(&self, record: &mut Record) -> Result<(), ToastyStoreError> {
+        let mut db = self.db.clone();
+
+        loop {
+            while Self::id_exists(&mut db, &record.id).await? {
+                record.id = Id::default();
+            }
+
+            // the record encodes its own id, so encode after the id settles
+            let data = rmp_serde::to_vec(record).map_err(ToastyStoreError::Encode)?;
+
+            let created = toasty::create!(TowerSession {
+                id: record.id.to_string(),
+                data,
+                expiry_date: record.expiry_date.unix_timestamp(),
+            })
+            .exec(&mut db)
+            .await;
+
+            match created {
+                Ok(_) => return Ok(()),
+                // Toasty has no structured unique-violation error, so re-check
+                // the row: if the id exists now, a concurrent create won it —
+                // pick a new id. Otherwise surface the insert error.
+                Err(insert_err) => {
+                    if Self::id_exists(&mut db, &record.id).await? {
+                        record.id = Id::default();
+                        continue;
+                    }
+                    return Err(ToastyStoreError::Toasty(insert_err));
+                }
+            }
+        }
+    }
+
+    async fn try_save(&self, record: &Record) -> Result<(), ToastyStoreError> {
         let mut db = self.db.clone();
         let id = record.id.to_string();
         let data = rmp_serde::to_vec(record).map_err(ToastyStoreError::Encode)?;
         let expiry_date = record.expiry_date.unix_timestamp();
 
         // Upsert. Toasty has no native upsert and updates don't report whether
-        // a row matched, so: select inside a transaction, then branch.
-        let mut tx = db.transaction().await.map_err(ToastyStoreError::Toasty)?;
-
-        let exists = TowerSession::filter_by_id(&id)
-            .first()
-            .exec(&mut tx)
-            .await
-            .map_err(ToastyStoreError::Toasty)?
-            .is_some();
+        // a row matched, so: check existence, then branch.
+        let exists = Self::id_exists(&mut db, &record.id).await?;
 
         if exists {
             TowerSession::update_by_id(&id)
                 .data(data)
                 .expiry_date(expiry_date)
-                .exec(&mut tx)
+                .exec(&mut db)
                 .await
                 .map_err(ToastyStoreError::Toasty)?;
-            tx.commit().await.map_err(ToastyStoreError::Toasty)?;
         } else {
             let created = toasty::create!(TowerSession {
                 id: &id,
                 data: data.clone(),
                 expiry_date,
             })
-            .exec(&mut tx)
+            .exec(&mut db)
             .await;
 
             match created {
-                Ok(_) => {
-                    tx.commit().await.map_err(ToastyStoreError::Toasty)?;
-                }
+                Ok(_) => {}
                 Err(insert_err) => {
                     // Toasty has no structured unique-violation error, so
                     // re-check the row instead: if it exists now, a concurrent
                     // first-save of the same id won the insert and this save
                     // is the update it now is. Otherwise the insert failed for
                     // a real reason — surface it.
-                    drop(tx);
-                    let raced = TowerSession::filter_by_id(&id)
-                        .first()
-                        .exec(&mut db)
-                        .await
-                        .map_err(ToastyStoreError::Toasty)?
-                        .is_some();
+                    let raced = Self::id_exists(&mut db, &record.id).await?;
                     if !raced {
-                        return Err(ToastyStoreError::Toasty(insert_err).into());
+                        return Err(ToastyStoreError::Toasty(insert_err));
                     }
                     TowerSession::update_by_id(&id)
                         .data(data)
@@ -304,7 +364,7 @@ impl SessionStore for ToastyStore {
         Ok(())
     }
 
-    async fn load(&self, session_id: &Id) -> session_store::Result<Option<Record>> {
+    async fn try_load(&self, session_id: &Id) -> Result<Option<Record>, ToastyStoreError> {
         let mut db = self.db.clone();
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let session = TowerSession::filter_by_id(session_id.to_string())
@@ -322,7 +382,7 @@ impl SessionStore for ToastyStore {
         }
     }
 
-    async fn delete(&self, session_id: &Id) -> session_store::Result<()> {
+    async fn try_delete(&self, session_id: &Id) -> Result<(), ToastyStoreError> {
         let mut db = self.db.clone();
         TowerSession::delete_by_id(&mut db, session_id.to_string())
             .await
