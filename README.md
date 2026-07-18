@@ -59,7 +59,7 @@ Toasty is young. This table records every place this store deviates from the ref
 
 | Toasty limitation (as of 0.8) | What this store does instead | Revisit when Toasty… |
 |---|---|---|
-| No native upsert (`ON CONFLICT DO UPDATE`) | `save()`: existence check, then insert or update as single statements, falling back to update when a racing insert wins | gains an upsert/`create_or_update` builder |
+| No native upsert (`ON CONFLICT DO UPDATE`) | `save()`: existence check, then insert or update as single statements, falling back to update when a racing insert wins | gains an upsert builder — tracked in [#422](https://github.com/tokio-rs/toasty/issues/422), implementation in flight in [#1091](https://github.com/tokio-rs/toasty/pull/1091) |
 | No affected-row count from update/delete | can't "try update, detect miss" — forces the existence check above | returns row counts from `exec()` |
 | No structured unique-violation error | `create()`/`save()` re-check row existence after a failed insert to distinguish "lost an id race" from a real error | adds an `is_constraint_violation()`-style API |
 | A failed statement inside an interactive transaction can leave the pooled connection mid-transaction (next use fails with "cannot start a transaction within a transaction"; observed on SQLite/Turso under write contention) | no interactive transactions at all — single-statement operations plus the existence re-checks above | cleans up transaction state when a statement fails |
@@ -71,7 +71,7 @@ Toasty is young. This table records every place this store deviates from the ref
 
 DynamoDB is untested and unsupported for now.
 
-The mid-transaction pooled-connection row looks like an upstream driver bug rather than a design limitation: after a statement fails inside `db.transaction()`, the connection appears to return to the pool without being rolled back, poisoning later checkouts. <!-- TODO: file against tokio-rs/toasty --> To reproduce it, check out `ead27d5` (the last transaction-based version of this store, toasty 0.8.0) and run `cargo nextest run --test test_concurrency` — the sqlite and turso stress tests fail with "cannot start a transaction within a transaction" within seconds.
+The mid-transaction pooled-connection row looks like an upstream driver bug rather than a design limitation: after a statement fails inside `db.transaction()`, the connection appears to return to the pool without being rolled back, poisoning later checkouts. <!-- TODO: file against tokio-rs/toasty — no existing issue as of 2026-07-18 (searched all 84 open issues) --> To reproduce it, check out `ead27d5` (the last transaction-based version of this store, toasty 0.8.0) and run `cargo nextest run --test test_concurrency` — the sqlite and turso stress tests fail with "cannot start a transaction within a transaction" within seconds.
 
 ## 🧪 Tests
 
