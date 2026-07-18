@@ -1,0 +1,91 @@
+name: Rust
+
+on:
+  push:
+    branches:
+      - main
+  pull_request: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: |
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: rustfmt
+        run: |
+          cargo fmt --all --check
+
+  check-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: "-D rustdoc::broken-intra-doc-links"
+        run: |
+          cargo doc --all-features --no-deps
+
+  tests:
+    needs: check
+    runs-on: ubuntu-latest
+
+    services:
+      postgres_store:
+        image: postgres
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql_store:
+        image: mysql
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: true
+          MYSQL_DATABASE: public
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          rustup toolchain install stable --profile minimal
+          cargo install cargo-tarpaulin
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: Run unit and integration tests (all backends)
+        env:
+          POSTGRES_URL: "postgresql://postgres:postgres@localhost:5432/postgres"
+          MYSQL_URL: "mysql://root@localhost:3306/public"
+        run: |
+          cargo nextest run --workspace --features postgresql,mysql
+      - name: Coverage (sqlite + turso backends)
+        run: |
+          cargo tarpaulin -olcov
+      - name: Upload coverage data to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          fail_ci_if_error: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

@@ -4,7 +4,8 @@ services:
     environment:
       POSTGRES_PASSWORD: "postgres"
     ports:
-      - "5432:5432"
+      # 5433 on the host: 5432 is often taken by a locally running postgres
+      - "5433:5432"
 
   mysql_store:
     image: mysql
