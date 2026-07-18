@@ -102,6 +102,10 @@ cargo nextest run -p tower-sessions-toasty-store
 
 Most credits go to the authors of `tower-sessions`, `tower-sessions-stores`, and `toasty`.
 
-<!-- 📦 Release
-cargo publish --dry-run -p tower-sessions-toasty-store
--->
+## 📦 Releasing
+
+Releases are automated with [release-plz](https://release-plz.dev). On every push
+to `main` it keeps an open "release" PR that bumps the version and updates
+`CHANGELOG.md` from the [conventional commits](https://www.conventionalcommits.org)
+since the last release. Merging that PR publishes to crates.io and creates the
+`v{version}` git tag and GitHub release.

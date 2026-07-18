@@ -1,0 +1,11 @@
+[workspace]
+# De-facto single-crate repo (the `tests` crate is publish = false, so
+# release-plz skips it): tag releases `v0.1.0`, not the workspace-prefixed
+# `tower-sessions-toasty-store-v0.1.0` default.
+git_tag_name = "v{{ version }}"
+
+[[package]]
+name = "tower-sessions-toasty-store"
+# CHANGELOG.md lives at the repo root (the crate's `readme` points at the root
+# README too); changelog_path is resolved from the root Cargo.toml.
+changelog_path = "CHANGELOG.md"
