@@ -70,6 +70,8 @@ Toasty is young. This table records every place this store deviates from the ref
 
 DynamoDB is untested and unsupported for now.
 
+While building this store we reported a bug where a failed transaction left its pooled connection mid-transaction ([tokio-rs/toasty#1098](https://github.com/tokio-rs/toasty/issues/1098)); it was fixed in Toasty 0.9 ([#1102](https://github.com/tokio-rs/toasty/pull/1102)).
+
 ### Write contention on Turso
 
 Turso fails a write immediately when another connection holds the write lock, where SQLite waits up to its busy timeout. The lock is held for about a millisecond per statement, so the store retries on a short backoff — 1ms doubling to 32ms — for up to 5s, matching SQLite's default busy timeout. A longer backoff mostly leaves the lock idle: with 16 concurrent writers, a 10ms→160ms backoff takes over a second.
