@@ -199,25 +199,29 @@ fn is_retryable(err: &toasty::Error) -> bool {
     err.is_serialization_failure() || err.to_string().contains("database is locked")
 }
 
-const MAX_CONFLICT_RETRIES: u32 = 8;
+/// Matches SQLite's default busy timeout.
+const RETRY_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// 10ms, 20ms, 40ms, ... capped at 160ms per attempt.
+/// 1ms, 2ms, 4ms, ... capped at 32ms per attempt. Turso fails a contended
+/// write immediately instead of waiting for the write lock, which is held for
+/// about a millisecond, so a longer backoff mostly leaves the lock idle.
 fn backoff(attempt: u32) -> std::time::Duration {
-    std::time::Duration::from_millis(5u64 << attempt.min(5))
+    std::time::Duration::from_millis(1u64 << attempt.min(5))
 }
 
-/// Re-evaluates `$op` until it succeeds, fails non-retryably, or exhausts
-/// [`MAX_CONFLICT_RETRIES`].
+/// Re-evaluates `$op` until it succeeds, fails non-retryably, or has retried
+/// for [`RETRY_FOR`].
 macro_rules! retry_on_conflict {
     ($op:expr) => {{
+        let deadline = tokio::time::Instant::now() + RETRY_FOR;
         let mut attempt = 0;
         loop {
             match $op {
                 Err(ToastyStoreError::Toasty(err))
-                    if is_retryable(&err) && attempt < MAX_CONFLICT_RETRIES =>
+                    if is_retryable(&err) && tokio::time::Instant::now() < deadline =>
                 {
-                    attempt += 1;
                     tokio::time::sleep(backoff(attempt)).await;
+                    attempt += 1;
                 }
                 result => break result,
             }
