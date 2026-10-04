@@ -97,6 +97,10 @@ impl From<ToastyStoreError> for session_store::Error {
 #[derive(Clone, Debug)]
 pub struct ToastyStore {
     db: toasty::Db,
+
+    /// Whether the backend has a primary-key upsert. MySQL has none: its
+    /// `ON DUPLICATE KEY UPDATE` reacts to any unique key, so Toasty rejects it.
+    upsert: bool,
 }
 
 impl ToastyStore {
@@ -122,7 +126,8 @@ impl ToastyStore {
     /// # })
     /// ```
     pub fn new(db: toasty::Db) -> Self {
-        Self { db }
+        let upsert = db.driver().capability().upsert_primary_key;
+        Self { db, upsert }
     }
 
     /// Create a store with its own [`toasty::Db`] (and connection pool) from a
@@ -276,13 +281,53 @@ impl ToastyStore {
             .is_some())
     }
 
-    // create and save use single-statement operations, no interactive
-    // transaction. A transaction adds nothing here: the id races it would
-    // narrow are already handled by re-checking existence after a failed
-    // insert, and single statements keep pooled connections free of
-    // transaction state under contention.
-
     async fn try_create(&self, record: &mut Record) -> Result<(), ToastyStoreError> {
+        if !self.upsert {
+            return self.try_create_without_upsert(record).await;
+        }
+        let mut db = self.db.clone();
+
+        loop {
+            // the record encodes its own id, so encode after each id change
+            let data = rmp_serde::to_vec(record).map_err(ToastyStoreError::Encode)?;
+
+            let inserted = TowerSession::upsert_by_id(record.id.to_string())
+                .data(data)
+                .expiry_date(record.expiry_date.unix_timestamp())
+                .or_ignore()
+                .exec(&mut db)
+                .await
+                .map_err(ToastyStoreError::Toasty)?;
+
+            if inserted.is_some() {
+                return Ok(());
+            }
+            record.id = Id::default();
+        }
+    }
+
+    async fn try_save(&self, record: &Record) -> Result<(), ToastyStoreError> {
+        if !self.upsert {
+            return self.try_save_without_upsert(record).await;
+        }
+        let mut db = self.db.clone();
+        let data = rmp_serde::to_vec(record).map_err(ToastyStoreError::Encode)?;
+
+        TowerSession::upsert_by_id(record.id.to_string())
+            .data(data)
+            .expiry_date(record.expiry_date.unix_timestamp())
+            .exec(&mut db)
+            .await
+            .map_err(ToastyStoreError::Toasty)?;
+        Ok(())
+    }
+
+    // The fallbacks for backends without upsert use single statements and
+    // re-check existence after a failed insert to detect a lost id race. A
+    // transaction would not close that race: a plain SELECT takes no lock
+    // that blocks a concurrent INSERT of the same id.
+
+    async fn try_create_without_upsert(&self, record: &mut Record) -> Result<(), ToastyStoreError> {
         let mut db = self.db.clone();
 
         loop {
@@ -317,14 +362,14 @@ impl ToastyStore {
         }
     }
 
-    async fn try_save(&self, record: &Record) -> Result<(), ToastyStoreError> {
+    async fn try_save_without_upsert(&self, record: &Record) -> Result<(), ToastyStoreError> {
         let mut db = self.db.clone();
         let id = record.id.to_string();
         let data = rmp_serde::to_vec(record).map_err(ToastyStoreError::Encode)?;
         let expiry_date = record.expiry_date.unix_timestamp();
 
-        // Upsert. Toasty has no native upsert and updates don't report whether
-        // a row matched, so: check existence, then branch.
+        // Updates don't report whether a row matched, so: check existence,
+        // then branch.
         let exists = Self::id_exists(&mut db, &record.id).await?;
 
         if exists {
@@ -406,7 +451,16 @@ mod toasty_store_tests {
     async fn create_store() -> ToastyStore {
         let store = ToastyStore::connect("sqlite::memory:").await.unwrap();
         store.migrate().await.unwrap();
+        assert!(store.upsert);
         store
+    }
+
+    /// Runs the fallback path for backends without upsert on SQLite.
+    async fn create_store_without_upsert() -> ToastyStore {
+        ToastyStore {
+            upsert: false,
+            ..create_store().await
+        }
     }
 
     fn test_record() -> Record {
@@ -433,7 +487,15 @@ mod toasty_store_tests {
 
     #[tokio::test]
     async fn test_save_insert_then_update() {
-        let store = create_store().await;
+        save_insert_then_update(create_store().await).await;
+    }
+
+    #[tokio::test]
+    async fn test_save_insert_then_update_without_upsert() {
+        save_insert_then_update(create_store_without_upsert().await).await;
+    }
+
+    async fn save_insert_then_update(store: ToastyStore) {
         let mut record = test_record();
 
         // insert path: id was never created
@@ -477,13 +539,34 @@ mod toasty_store_tests {
 
     #[tokio::test]
     async fn test_create_id_collision() {
-        let store = create_store().await;
+        create_id_collision(create_store().await).await;
+    }
+
+    #[tokio::test]
+    async fn test_create_id_collision_without_upsert() {
+        create_id_collision(create_store_without_upsert().await).await;
+    }
+
+    async fn create_id_collision(store: ToastyStore) {
         let mut record1 = test_record();
         let mut record2 = test_record();
+        record2
+            .data
+            .insert("foo".to_string(), serde_json::to_value(42).unwrap());
         store.create(&mut record1).await.unwrap();
         record2.id = record1.id; // Set the same ID for record2
         store.create(&mut record2).await.unwrap();
         assert_ne!(record1.id, record2.id); // IDs should be different
+
+        // the colliding create left the first record untouched
+        assert_eq!(
+            Some(record1.clone()),
+            store.load(&record1.id).await.unwrap()
+        );
+        assert_eq!(
+            Some(record2.clone()),
+            store.load(&record2.id).await.unwrap()
+        );
     }
 
     #[tokio::test]
